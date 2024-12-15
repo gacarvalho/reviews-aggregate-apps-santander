@@ -7,7 +7,6 @@ from pyspark.sql.functions import (
 from metrics import MetricsCollector, validate_ingest
 from tools import *
 
-
 # Configuração de logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 

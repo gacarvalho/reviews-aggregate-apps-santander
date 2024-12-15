@@ -4,13 +4,14 @@ from pyspark.sql.functions import (
     regexp_extract, max as spark_max, col, when, input_file_name, lit, date_format, to_date
 )
 from pyspark.sql.types import (
-    MapType, StringType, ArrayType, BinaryType, StructType, StructField, DoubleType, LongType
+    MapType, StringType, ArrayType, BinaryType, StructType, StructField, DoubleType, LongType, IntegerType
 )
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote_plus
 from unidecode import unidecode
 from pyspark.sql.functions import regexp_extract
+from schema_gold import all_sources_agg_schema_gold
 
 def processing_reviews():
     try:
@@ -123,7 +124,18 @@ def processing_reviews():
         logging.error(f"Erro ao processar os dados: {e}")
         raise
 
-    
+def get_schema(df, schema):
+    """
+    Obtém o DataFrame a seguir o schema especificado.
+    """
+    for field in schema.fields:
+        if field.dataType == IntegerType():
+            df = df.withColumn(field.name, df[field.name].cast(IntegerType()))
+        elif field.dataType == StringType():
+            df = df.withColumn(field.name, df[field.name].cast(StringType()))
+    return df.select([field.name for field in schema.fields])
+
+
 def save_reviews(reviews_df: DataFrame, directory: str):
     """
     Salva os dados do DataFrame no formato Delta no diretório especificado.
@@ -138,6 +150,8 @@ def save_reviews(reviews_df: DataFrame, directory: str):
 
         # Escrever os dados no formato Delta
         # reviews_df.write.format("delta").mode("overwrite").save(directory)
+        print("reviews_df")
+        reviews_df.printSchema()
         reviews_df.write.option("compression", "snappy").mode("overwrite").parquet(directory)
         logging.info(f"Dados salvos em {directory} no formato Delta")
 
@@ -151,6 +165,11 @@ def save_dataframe(df, path, label):
     Salva o DataFrame em formato parquet e loga a operação.
     """
     try:
+        schema = all_sources_agg_schema_gold()
+
+        # Alinhar o DataFrame ao schema definido
+        df = get_schema(df, schema)
+
         if df.limit(1).count() > 0:  # Verificar existência de dados
             logging.info(f"Salvando dados {label} para: {path}")
             save_reviews(df, path)
