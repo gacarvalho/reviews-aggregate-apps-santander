@@ -24,9 +24,6 @@ def main():
             # Validação e separação dos dados
             valid_df, invalid_df, validation_results = validate_ingest(spark, df)
 
-            print("valid_df")
-            valid_df.show(truncate=False)
-
             # Consolidação de colunas equivalentes
             df = valid_df.withColumn("rating", F.col("rating").cast("double")) \
                 .withColumn("final_rating", F.coalesce(F.col("rating"), F.lit(None).cast("double"))) \
@@ -95,7 +92,7 @@ def main():
             save_metrics(metrics_json)
 
     except Exception as e:
-        logging.error(f"An error occurred: {e}", exc_info=True)
+        logging.error(f"[*] An error occurred: {e}", exc_info=True)
         
 
 def spark_session():
@@ -104,13 +101,13 @@ def spark_session():
     """
     try:
         spark = SparkSession.builder \
-            .appName("App Reviews [google play]") \
+            .appName("App Reviews [aggregate]") \
             .config("spark.jars.packages", "org.apache.spark:spark-measure_2.12:0.16") \
             .config("spark.sql.parquet.enableVectorizedReader", "false") \
             .getOrCreate()
         return spark
     except Exception as e:
-        logging.error(f"Failed to create SparkSession: {e}", exc_info=True)
+        logging.error(f"[*] Failed to create SparkSession: {e}", exc_info=True)
         raise
 
 if __name__ == "__main__":

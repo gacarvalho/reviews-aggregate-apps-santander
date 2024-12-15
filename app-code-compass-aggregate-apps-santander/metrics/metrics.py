@@ -49,7 +49,7 @@ class MetricsCollector:
         Coleta métricas de processamento, validação e recursos utilizados.
         """
         if self.start_time is None or self.end_time is None:
-            raise ValueError("O tempo de início ou término não foi definido corretamente. Verifique a execução dos métodos start_collection e end_collection.")
+            raise ValueError("[*] O tempo de início ou término não foi definido corretamente. Verifique a execução dos métodos start_collection e end_collection.")
 
         total_time = self.end_time - self.start_time
         start_ts = self.start_time.strftime("%Y-%m-%d %H:%M:%S")
@@ -109,7 +109,7 @@ class MetricsCollector:
         return json.dumps(metrics)
 
 def print_validation_results(results: dict):
-    print(f"\nValidação da ingestão concluída para {results['total_records']} registros.\n")
+    print(f"\n[*] Validação da ingestão concluída para {results['total_records']} registros.\n")
     for check, result in results.items():
         if check != "total_records":
             status = "PASSOU" if result["status"] else "FALHOU"
