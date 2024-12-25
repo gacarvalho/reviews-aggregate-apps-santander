@@ -57,7 +57,7 @@ run_spark_submit() {
     --conf spark.yarn.appMasterEnv.MONGO_PORT=27017 \
     --conf spark.yarn.appMasterEnv.MONGO_DB=compass \
     --name app-code-compass-aggregate-apps-santander \
-    /app/app-code-compass-aggregate-apps-santander.py"
+    /app/repo_agg_all_apps_gold.py"
 
   # Exibe o comando para depuração
   log "Comando spark-submit que será executado: $spark_cmd"

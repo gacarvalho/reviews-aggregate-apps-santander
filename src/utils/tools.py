@@ -11,9 +11,9 @@ from pathlib import Path
 from urllib.parse import quote_plus
 from unidecode import unidecode
 from pyspark.sql.functions import regexp_extract
-from schema_gold import all_sources_agg_schema_gold
+from src.schema.schema_gold import all_sources_agg_schema_gold
 
-def processing_reviews():
+def processing_reviews(path_google_play, path_mongodb, path_apple_store):
     try:
         # Inicializa a sessão Spark
         spark = SparkSession.builder.appName("CompassAggregation").getOrCreate()
@@ -21,9 +21,9 @@ def processing_reviews():
         logging.info("[*] Iniciando o processo de agregação de dados")
 
         # Carregar dados dos arquivos Parquet
-        df_google_play = spark.read.parquet('/santander/silver/compass/reviews/googlePlay')
-        df_mongodb = spark.read.parquet('/santander/silver/compass/reviews/mongodb')
-        df_apple_store = spark.read.parquet('/santander/silver/compass/reviews/appleStore')
+        df_google_play = spark.read.parquet(path_google_play)
+        df_mongodb = spark.read.parquet(path_mongodb)
+        df_apple_store = spark.read.parquet(path_apple_store)
 
         # Adicionar nome do arquivo, se necessário
         df_google_play = df_google_play.withColumn("file_name", input_file_name())
@@ -255,16 +255,10 @@ def read_data(spark: SparkSession, schema: StructType, pathSource: str) -> DataF
         logging.error(f"Erro ao ler os dados: {e}", exc_info=True)
         raise
 
-def save_data(valid_df: DataFrame, invalid_df: DataFrame):
+def save_data(valid_df: DataFrame, invalid_df: DataFrame,path_target: str,  path_target_fail: str):
     """
     Salva os dados válidos e inválidos nos caminhos apropriados.
     """
-
-    # Definindo caminhos
-    datePath = datetime.now().strftime("%Y%m%d")
-    path_target = f"/santander/gold/compass/reviews/apps_santander_aggregate/odate={datePath}/"
-    path_target_fail = f"/santander/gold/compass/reviews_fail/apps_santander_aggregate/odate={datePath}/"
-    
     try:
         save_dataframe(valid_df, path_target, "valido")
         save_dataframe(invalid_df, path_target_fail, "invalido")

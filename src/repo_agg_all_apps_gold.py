@@ -4,11 +4,11 @@ import pyspark.sql.functions as F
 from pyspark.sql.functions import (
     col, coalesce, lit, avg, max, min, count, round, when, input_file_name, regexp_extract
 )
-from metrics import MetricsCollector, validate_ingest
-from tools import *
+from src.metrics.metrics import MetricsCollector, validate_ingest
+from src.utils.tools import *
 
 # Configuração de logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, start_collectionformat='%(asctime)s - %(levelname)s - %(message)s')
 
 def main():
     try:
@@ -19,7 +19,12 @@ def main():
             metrics_collector = MetricsCollector(spark)
             metrics_collector.start_collection()
 
-            df = processing_reviews()
+
+            path_google_play = "/santander/silver/compass/reviews/googlePlay"
+            path_mongodb = "/santander/silver/compass/reviews/mongodb"
+            path_apple_store = "/santander/silver/compass/reviews/appleStore"
+
+            df = processing_reviews(path_google_play, path_mongodb, path_apple_store)
 
             # Validação e separação dos dados
             valid_df, invalid_df, validation_results = validate_ingest(spark, df)
@@ -83,9 +88,17 @@ def main():
             metrics_collector.end_collection()
             metrics_json = metrics_collector.collect_metrics(valid_df, invalid_df, validation_results, "gold_aggregate")
 
+            # Definindo caminhos
+            datePath = datetime.now().strftime("%Y%m%d")
+
             # Salvando dados e métricas
-            save_data(valid_df, invalid_df)
+            path_target = f"/santander/gold/compass/reviews/apps_santander_aggregate/odate={datePath}/"
+            path_target_fail = f"/santander/gold/compass/reviews_fail/apps_santander_aggregate/odate={datePath}/"
+
+
+            save_data(valid_df, invalid_df,path_target, path_target_fail)
             save_data_gold(gold_df, "dt_d_view_gold_agg_compass") # salva visao gold no mongo
+
             # salva visao das avaliacoes no mongo para usuarios e executivos
             df_visao_silver = valid_df.select("app","rating","iso_date","title","snippet","app_source")
             save_data_gold(df_visao_silver, "dt_d_view_silver_historical_compass")            
