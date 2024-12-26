@@ -4,7 +4,7 @@ import pyspark.sql.functions as F
 from pyspark.sql.functions import (
     col, coalesce, lit, avg, max, min, count, round, when, input_file_name, regexp_extract
 )
-
+from datetime import datetime
 try:
     from tools import *
     from metrics import MetricsCollector, validate_ingest
