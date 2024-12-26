@@ -11,7 +11,11 @@ from pathlib import Path
 from urllib.parse import quote_plus
 from unidecode import unidecode
 from pyspark.sql.functions import regexp_extract
-from src.schema.schema_gold import all_sources_agg_schema_gold
+try:
+    from schema_gold import all_sources_agg_schema_gold
+except ModuleNotFoundError:
+    from src.schema.schema_gold import all_sources_agg_schema_gold
+
 
 def processing_reviews(path_google_play, path_mongodb, path_apple_store):
     try:

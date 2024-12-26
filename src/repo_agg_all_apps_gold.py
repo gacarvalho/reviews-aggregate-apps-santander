@@ -4,8 +4,14 @@ import pyspark.sql.functions as F
 from pyspark.sql.functions import (
     col, coalesce, lit, avg, max, min, count, round, when, input_file_name, regexp_extract
 )
-from metrics import MetricsCollector, validate_ingest
-from tools import *
+
+try:
+    from tools import *
+    from metrics import MetricsCollector, validate_ingest
+except ModuleNotFoundError:
+    from src.utils.tools import *
+    from src.metrics.metrics import MetricsCollector, validate_ingest
+
 
 # Configuração de logging
 logging.basicConfig(level=logging.INFO, start_collectionformat='%(asctime)s - %(levelname)s - %(message)s')

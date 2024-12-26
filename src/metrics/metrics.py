@@ -190,8 +190,12 @@ def validate_ingest(spark: SparkSession, df: DataFrame) -> tuple:
         validation_results["type_consistency_check"]["code"] = 300
         validation_results["type_consistency_check"]["message"] = "Consistencia dos tipos de dados verificada com sucesso."
 
+    cols = [
+        "id","app","rating","iso_date","title","snippet","odate","file_name","app_source"
+    ]
+
     # Modificação: Remover o uso de subtract e filtrar registros válidos
-    valid_records = df.filter(
+    valid_records = df.select(*cols).filter(
         (col("id").isNotNull()) &
         (col("app").isNotNull()) &
         (col("iso_date").isNotNull()) &
@@ -200,7 +204,7 @@ def validate_ingest(spark: SparkSession, df: DataFrame) -> tuple:
     )
 
     # Agora, gerando os registros inválidos de maneira mais direta
-    invalid_records = df.filter(
+    invalid_records = df.select(*cols).filter(
         (col("id").isNull()) |
         (col("app").isNull()) |
         (col("iso_date").isNull()) |

@@ -14,4 +14,3 @@ def all_sources_agg_schema_gold():
 
     ])
 
-
