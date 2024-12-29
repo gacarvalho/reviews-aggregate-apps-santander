@@ -2,9 +2,11 @@ import logging
 from pyspark.sql import SparkSession
 import pyspark.sql.functions as F
 from pyspark.sql.functions import (
-    col, coalesce, lit, avg, max, min, count, round, when, input_file_name, regexp_extract
+    col, coalesce, lit, avg, max, min, count, round, when, input_file_name, regexp_extract, upper
 )
 from datetime import datetime
+from pyspark.sql.types import IntegerType
+
 try:
     from tools import *
     from metrics import MetricsCollector, validate_ingest
@@ -84,7 +86,7 @@ def main():
                 F.count("*").alias("avaliacoes_total"),
                 comentarios_positivos,
                 comentarios_negativos,
-            )
+            ).withColumn("app_source", upper(col("app_source")))
 
             # Exibe o resultado
             gold_df.orderBy(col("periodo_referencia").desc(), col("app_nome").desc()).show(gold_df.count(), truncate=False)
@@ -106,7 +108,13 @@ def main():
             save_data_gold(gold_df, "dt_d_view_gold_agg_compass") # salva visao gold no mongo
 
             # salva visao das avaliacoes no mongo para usuarios e executivos
-            df_visao_silver = valid_df.select("app","rating","iso_date","title","snippet","app_source")
+            df_visao_silver = valid_df.select(upper("app").alias("app"),
+                                              valid_df["rating"].cast(IntegerType()).alias("rating"),
+                                              "iso_date",
+                                              "title",
+                                              "snippet",
+                                              upper("app_source").alias("app_source"))
+
             save_data_gold(df_visao_silver, "dt_d_view_silver_historical_compass")            
             save_metrics(metrics_json)
 
