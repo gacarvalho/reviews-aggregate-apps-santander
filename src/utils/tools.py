@@ -309,3 +309,14 @@ def save_data_gold(df, collection_name: str):
     
     except Exception as e:
         logging.error(f"[*] Erro ao sobrescrever a coleção '{collection_name}': {e}", exc_info=True)
+
+def save_metrics_job_fail(metrics_json):
+    """
+    Salva as métricas no MongoDB.
+    """
+    try:
+        metrics_data = json.loads(metrics_json)
+        write_to_mongo(metrics_data, "dt_datametrics_fail_compass")
+        logging.info(f"[*] Métricas da aplicação salvas: {metrics_json}")
+    except json.JSONDecodeError as e:
+        logging.error(f"[*] Erro ao processar métricas: {e}", exc_info=True)
