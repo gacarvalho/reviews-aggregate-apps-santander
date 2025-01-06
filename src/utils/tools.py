@@ -337,7 +337,7 @@ def read_data_mongo(spark: SparkSession, table_name: str) -> DataFrame:
         .option("collection", table_name) \
         .load()
 
-    return df
+    return df.drop(F.col("_id.oid"))
 
 def save_data_mongo(spark: SparkSession, df: DataFrame, collection_name: str):
     """
