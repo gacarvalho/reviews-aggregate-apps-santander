@@ -106,8 +106,8 @@ def main():
         path_target_fail = f"/santander/gold/compass/reviews_fail/apps_santander_aggregate/odate={datePath}/"
 
 
-        save_data(valid_df, invalid_df,path_target, path_target_fail)
-        save_data_gold(gold_df, "dt_d_view_gold_agg_compass") # salva visao gold no mongo
+        save_data(spark, valid_df, invalid_df,path_target, path_target_fail)
+        save_data_mongo(spark, gold_df.distinct(), "dt_d_view_gold_agg_compass") # salva visao gold no mongo
 
         # salva visao das avaliacoes no mongo para usuarios e executivos
         df_visao_silver = valid_df.select(upper("app").alias("app"),
@@ -117,7 +117,7 @@ def main():
                                           "snippet",
                                           upper("app_source").alias("app_source"))
 
-        save_data_gold(df_visao_silver, "dt_d_view_silver_historical_compass")
+        save_data_mongo(spark, df_visao_silver.distinct(), "dt_d_view_silver_historical_compass")
         save_metrics(metrics_json)
 
     except Exception as e:

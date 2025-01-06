@@ -259,7 +259,7 @@ def read_data(spark: SparkSession, schema: StructType, pathSource: str) -> DataF
         logging.error(f"Erro ao ler os dados: {e}", exc_info=True)
         raise
 
-def save_data(valid_df: DataFrame, invalid_df: DataFrame,path_target: str,  path_target_fail: str):
+def save_data(spark: SparkSession, valid_df: DataFrame, invalid_df: DataFrame,path_target: str,  path_target_fail: str):
     """
     Salva os dados válidos e inválidos nos caminhos apropriados.
     """
@@ -282,33 +282,82 @@ def save_metrics(metrics_json: str):
         logging.error(f"[*] Erro ao processar métricas: {e}", exc_info=True)
 
 
-def save_data_gold(df, collection_name: str):
+# def save_data(df, collection_name: str):
+#     """
+#     Sobrescreve os dados de uma coleção no MongoDB com o conteúdo de um DataFrame.
+#
+#     Args:
+#         df (pd.DataFrame): DataFrame contendo os dados a serem inseridos.
+#         collection_name (str): Nome da coleção no MongoDB.
+#     """
+#     try:
+#         # Verifica se o DataFrame está vazio
+#         if df.count() == 0:
+#             logging.warning(f"[*] A coleção '{collection_name}' não foi atualizada pois o DataFrame está vazio.")
+#             return
+#
+#         # Converte o DataFrame do PySpark em uma lista de dicionários (JSON)
+#         data = [json.loads(row) for row in df.toJSON().collect()]
+#
+#
+#         # Salva no MongoDB
+#         write_to_mongo(data, collection_name, overwrite=True)
+#
+#         logging.info(f"[*] Dados da coleção '{collection_name}' atualizados com sucesso! {len(data)} documentos inseridos.")
+#
+#     except Exception as e:
+#         logging.error(f"[*] Erro ao sobrescrever a coleção '{collection_name}': {e}", exc_info=True)
+
+def read_data_mongo(spark: SparkSession, table_name: str) -> DataFrame:
     """
-    Sobrescreve os dados de uma coleção no MongoDB com o conteúdo de um DataFrame.
-    
+    Lê dados de uma tabela no MongoDB e, se houver, verifica o último timestamp disponível
+    em um diretório HDFS para continuar o processamento incremental.
+    """
+    df = spark.read \
+        .format("com.mongodb.spark.sql.DefaultSource") \
+        .option("collection", table_name) \
+        .load()
+
+    return df
+
+def save_data_mongo(spark: SparkSession, df: DataFrame, collection_name: str):
+    """
+    Lê os dados existentes de uma coleção no MongoDB de forma incremental, une com novos dados,
+    remove duplicatas e sobrescreve a coleção.
+
     Args:
-        df (pd.DataFrame): DataFrame contendo os dados a serem inseridos.
+        spark (SparkSession): A sessão Spark.
+        df (pyspark.sql.DataFrame): DataFrame contendo os novos dados a serem inseridos.
         collection_name (str): Nome da coleção no MongoDB.
+        mongo_uri (str): URI de conexão com o MongoDB.
+        pathSource (str): Caminho do diretório HDFS para armazenar a leitura incremental.
     """
     try:
         # Verifica se o DataFrame está vazio
         if df.count() == 0:
             logging.warning(f"[*] A coleção '{collection_name}' não foi atualizada pois o DataFrame está vazio.")
             return
-        
-        # Converte o DataFrame em uma lista de dicionários
-        #data = json.loads(df.to_json(orient="records"))
+
+        # Lê os dados existentes do MongoDB (incremental ou completo)
+        existing_data = read_data_mongo(spark, collection_name)
+
+        # Alinha os esquemas e faz a união dos DataFrames
+        combined_data = df.unionByName(existing_data, allowMissingColumns=True)
+
+        # Remove duplicatas
+        distinct_data = combined_data.distinct()
+
         # Converte o DataFrame do PySpark em uma lista de dicionários (JSON)
-        data = [json.loads(row) for row in df.toJSON().collect()]
+        data = [json.loads(row) for row in distinct_data.toJSON().collect()]
 
-
-        # Salva no MongoDB
+        # Salva no MongoDB sobrescrevendo a coleção
         write_to_mongo(data, collection_name, overwrite=True)
-        
+
         logging.info(f"[*] Dados da coleção '{collection_name}' atualizados com sucesso! {len(data)} documentos inseridos.")
-    
+
     except Exception as e:
         logging.error(f"[*] Erro ao sobrescrever a coleção '{collection_name}': {e}", exc_info=True)
+
 
 def save_metrics_job_fail(metrics_json):
     """

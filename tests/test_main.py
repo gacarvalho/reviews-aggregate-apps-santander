@@ -9,7 +9,7 @@ from pyspark.sql.functions import (
 )
 from unittest.mock import MagicMock, patch
 from pyspark.sql import SparkSession
-from src.utils.tools import processing_reviews, save_data, save_data_gold
+from src.utils.tools import processing_reviews, save_data_mongo, save_data
 from src.metrics.metrics import validate_ingest
 
 @pytest.fixture
@@ -244,12 +244,12 @@ def test_save_data(spark, setup_test_data_google, setup_test_data_apple, setup_t
     with patch("pyspark.sql.DataFrameWriter.parquet", MagicMock()) as mock_parquet:
 
         # Salvando dados e métricas
-        save_data(valid_df, invalid_df,path_target,path_target_fail)
-        save_data_gold(gold_df, "dt_d_view_gold_agg_compass") # salva visao gold no mongo
+        save_data(spark, valid_df, invalid_df,path_target,path_target_fail)
+        save_data_mongo(spark, gold_df, "dt_d_view_gold_agg_compass") # salva visao gold no mongo
 
         # salva visao das avaliacoes no mongo para usuarios e executivos
         df_visao_silver = valid_df.select("app","rating","iso_date","title","snippet","app_source")
-        save_data_gold(df_visao_silver, "dt_d_view_silver_historical_compass")
+        save_data_mongo(spark, df_visao_silver, "dt_d_view_silver_historical_compass")
 
         # Verificando se o método parquet foi chamado com os caminhos corretos
         mock_parquet.assert_any_call(path_target)
