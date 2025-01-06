@@ -6,7 +6,7 @@ from pyspark.sql.functions import (
     col, coalesce, lit, avg, max, min, count, round, when, input_file_name, regexp_extract, upper
 )
 from datetime import datetime
-from pyspark.sql.types import IntegerType
+from pyspark.sql.types import IntegerType, StringType
 
 try:
     from tools import *
@@ -110,12 +110,29 @@ def main():
         save_data_mongo(spark, gold_df.distinct(), "dt_d_view_gold_agg_compass") # salva visao gold no mongo
 
         # salva visao das avaliacoes no mongo para usuarios e executivos
-        df_visao_silver = valid_df.select(upper("app").alias("app"),
-                                          valid_df["rating"].cast(IntegerType()).alias("rating"),
-                                          "iso_date",
-                                          "title",
-                                          "snippet",
-                                          upper("app_source").alias("app_source"))
+        df_visao_silver = valid_df.select(
+            F.upper("app").alias("app"),
+            valid_df["rating"].cast(IntegerType()).alias("rating"),
+            # Padronizar o formato da data 'iso_date'
+            F.when(
+                F.col("iso_date").rlike(r"\.\d{6}$"),  # Caso tenha milissegundos (como no exemplo '2024-11-30T23:10:15.494921')
+                F.to_timestamp("iso_date", "yyyy-MM-dd'T'HH:mm:ss.SSSSSS")
+            ).when(
+                F.col("iso_date").rlike(r"Z$"),  # Caso seja o formato com 'Z' no final (UTC)
+                F.to_timestamp("iso_date", "yyyy-MM-dd'T'HH:mm:ss'Z'")
+            ).otherwise(
+                F.to_timestamp("iso_date", "yyyy-MM-dd'T'HH:mm:ssZ")  # Caso tenha o fuso horário
+            ).alias("iso_date"),
+
+            # Usando date_format para garantir que todas as datas tenham 3 casas decimais de milissegundos
+            F.date_format(
+                F.when(
+                    F.col("iso_date").isNotNull(),
+                    F.col("iso_date")
+                ).otherwise(F.lit(None)),
+                "yyyy-MM-dd HH:mm:ss.SSS"
+            ).alias("iso_date")
+        )
 
         save_data_mongo(spark, df_visao_silver.distinct(), "dt_d_view_silver_historical_compass")
         save_metrics(metrics_json)
