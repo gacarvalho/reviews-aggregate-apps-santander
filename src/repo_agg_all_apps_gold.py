@@ -111,6 +111,9 @@ def main():
 
         # salva visao das avaliacoes no mongo para usuarios e executivos
         df_visao_silver = valid_df.select(
+            F.upper("title").alias("title"),
+            F.upper("snippet").alias("snippet"),
+            upper("app_source").alias("app_source"),
             F.upper("app").alias("app"),
             valid_df["rating"].cast(IntegerType()).alias("rating"),
             # Padronizar o formato da data 'iso_date'
