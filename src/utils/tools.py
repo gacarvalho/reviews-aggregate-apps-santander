@@ -358,9 +358,11 @@ def save_data_mongo(spark: SparkSession, df: DataFrame, collection_name: str):
         # Lê os dados existentes do MongoDB (incremental ou completo)
         existing_data = read_data_mongo(spark, collection_name)
 
-        # Verifica se existe a coluna 'iso_date' em ambos os DataFrames e renomeia, se necessário
-        if 'iso_date' in df.columns and 'iso_date' in existing_data.columns:
+        # Renomeia a coluna 'iso_date' em ambos os DataFrames, se necessário
+        if 'iso_date' in df.columns:
             df = df.withColumnRenamed("iso_date", "iso_date_new")
+        if 'iso_date' in existing_data.columns:
+            existing_data = existing_data.withColumnRenamed("iso_date", "iso_date_existing")
 
         # Alinha os esquemas e faz a união dos DataFrames
         combined_data = df.unionByName(existing_data, allowMissingColumns=True)
@@ -378,6 +380,7 @@ def save_data_mongo(spark: SparkSession, df: DataFrame, collection_name: str):
 
     except Exception as e:
         logging.error(f"[*] Erro ao sobrescrever a coleção '{collection_name}': {e}", exc_info=True)
+
 
 
 def save_metrics_job_fail(metrics_json):
