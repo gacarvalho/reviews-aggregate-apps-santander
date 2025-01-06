@@ -313,8 +313,27 @@ def read_data_mongo(spark: SparkSession, table_name: str) -> DataFrame:
     Lê dados de uma tabela no MongoDB e, se houver, verifica o último timestamp disponível
     em um diretório HDFS para continuar o processamento incremental.
     """
+    # ---------------------------------------------- Enviroments conexão com MongoDB ----------------------------------------------------------
+    mongo_user = os.environ["MONGO_USER"]
+    mongo_pass = os.environ["MONGO_PASS"]
+    mongo_host = os.environ["MONGO_HOST"]
+    mongo_port = os.environ["MONGO_PORT"]
+    mongo_db = os.environ["MONGO_DB"]
+
+
+    # ---------------------------------------------- Escapar nome de usuário e senha ----------------------------------------------
+    # A função quote_plus transforma caracteres especiais em seu equivalente escapado, de modo que o
+    # URI seja aceito pelo MongoDB. Por exemplo, m@ngo será convertido para m%40ngo.
+    escaped_user = quote_plus(mongo_user)
+    escaped_pass = quote_plus(mongo_pass)
+
+
+    # Conexão com o MongoDB
+    mongo_uri = f"mongodb://{escaped_user}:{escaped_pass}@{mongo_host}:{mongo_port}/{mongo_db}?authSource={mongo_db}&maxPoolSize=1"
+
     df = spark.read \
         .format("com.mongodb.spark.sql.DefaultSource") \
+        .option("uri", mongo_uri) \
         .option("collection", table_name) \
         .load()
 
