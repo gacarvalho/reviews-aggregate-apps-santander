@@ -282,71 +282,12 @@ def save_metrics(metrics_json: str):
         logging.error(f"[*] Erro ao processar métricas: {e}", exc_info=True)
 
 
-# def save_data(df, collection_name: str):
-#     """
-#     Sobrescreve os dados de uma coleção no MongoDB com o conteúdo de um DataFrame.
-#
-#     Args:
-#         df (pd.DataFrame): DataFrame contendo os dados a serem inseridos.
-#         collection_name (str): Nome da coleção no MongoDB.
-#     """
-#     try:
-#         # Verifica se o DataFrame está vazio
-#         if df.count() == 0:
-#             logging.warning(f"[*] A coleção '{collection_name}' não foi atualizada pois o DataFrame está vazio.")
-#             return
-#
-#         # Converte o DataFrame do PySpark em uma lista de dicionários (JSON)
-#         data = [json.loads(row) for row in df.toJSON().collect()]
-#
-#
-#         # Salva no MongoDB
-#         write_to_mongo(data, collection_name, overwrite=True)
-#
-#         logging.info(f"[*] Dados da coleção '{collection_name}' atualizados com sucesso! {len(data)} documentos inseridos.")
-#
-#     except Exception as e:
-#         logging.error(f"[*] Erro ao sobrescrever a coleção '{collection_name}': {e}", exc_info=True)
-
-def read_data_mongo(spark: SparkSession, table_name: str) -> DataFrame:
+def save_data_mongo(df, collection_name: str):
     """
-    Lê dados de uma tabela no MongoDB e, se houver, verifica o último timestamp disponível
-    em um diretório HDFS para continuar o processamento incremental.
-    """
-    # ---------------------------------------------- Enviroments conexão com MongoDB ----------------------------------------------------------
-    mongo_user = os.environ["MONGO_USER"]
-    mongo_pass = os.environ["MONGO_PASS"]
-    mongo_host = os.environ["MONGO_HOST"]
-    mongo_port = os.environ["MONGO_PORT"]
-    mongo_db = os.environ["MONGO_DB"]
-
-
-    # ---------------------------------------------- Escapar nome de usuário e senha ----------------------------------------------
-    # A função quote_plus transforma caracteres especiais em seu equivalente escapado, de modo que o
-    # URI seja aceito pelo MongoDB. Por exemplo, m@ngo será convertido para m%40ngo.
-    escaped_user = quote_plus(mongo_user)
-    escaped_pass = quote_plus(mongo_pass)
-
-
-    # Conexão com o MongoDB
-    mongo_uri = f"mongodb://{escaped_user}:{escaped_pass}@{mongo_host}:{mongo_port}/{mongo_db}?authSource={mongo_db}&maxPoolSize=1"
-
-    df = spark.read \
-        .format("com.mongodb.spark.sql.DefaultSource") \
-        .option("uri", mongo_uri) \
-        .option("collection", table_name) \
-        .load()
-
-    return df.drop(F.col("_id.oid"))
-
-def save_data_mongo(spark: SparkSession, df: DataFrame, collection_name: str):
-    """
-    Lê os dados existentes de uma coleção no MongoDB de forma incremental, une com novos dados,
-    remove duplicatas e sobrescreve a coleção.
+    Sobrescreve os dados de uma coleção no MongoDB com o conteúdo de um DataFrame.
 
     Args:
-        spark (SparkSession): A sessão Spark.
-        df (pyspark.sql.DataFrame): DataFrame contendo os novos dados a serem inseridos.
+        df (pd.DataFrame): DataFrame contendo os dados a serem inseridos.
         collection_name (str): Nome da coleção no MongoDB.
     """
     try:
@@ -355,40 +296,18 @@ def save_data_mongo(spark: SparkSession, df: DataFrame, collection_name: str):
             logging.warning(f"[*] A coleção '{collection_name}' não foi atualizada pois o DataFrame está vazio.")
             return
 
-        # Lê os dados existentes do MongoDB (incremental ou completo)
-        existing_data = read_data_mongo(spark, collection_name)
-
-        # Renomeia a coluna 'iso_date' em ambos os DataFrames, se necessário
-        if 'iso_date' in df.columns:
-            df = df.withColumnRenamed("iso_date", "iso_date_new")
-
-        if 'iso_date' in existing_data.columns:
-            existing_data = existing_data.withColumnRenamed("iso_date", "iso_date_existing")
-
-        existing_data_mongo = existing_data.drop(F.col("_id.oid"))
-
-        print("df")
-        df.printSchema()
-        print("existing_data")
-        existing_data_mongo.printSchema()
-
-
-        # Alinha os esquemas e faz a união dos DataFrames
-        combined_data = df.union(existing_data_mongo)
-
-        # Remove duplicatas
-        distinct_data = combined_data.distinct()
-
         # Converte o DataFrame do PySpark em uma lista de dicionários (JSON)
-        data = [json.loads(row) for row in distinct_data.toJSON().collect()]
+        data = [json.loads(row) for row in df.toJSON().collect()]
 
-        # Salva no MongoDB sobrescrevendo a coleção
+        # Salva no MongoDB
         write_to_mongo(data, collection_name, overwrite=True)
 
         logging.info(f"[*] Dados da coleção '{collection_name}' atualizados com sucesso! {len(data)} documentos inseridos.")
 
     except Exception as e:
         logging.error(f"[*] Erro ao sobrescrever a coleção '{collection_name}': {e}", exc_info=True)
+
+
 
 
 
