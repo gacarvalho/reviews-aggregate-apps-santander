@@ -361,11 +361,12 @@ def save_data_mongo(spark: SparkSession, df: DataFrame, collection_name: str):
         # Renomeia a coluna 'iso_date' em ambos os DataFrames, se necessário
         if 'iso_date' in df.columns:
             df = df.withColumnRenamed("iso_date", "iso_date_new")
+
         if 'iso_date' in existing_data.columns:
             existing_data = existing_data.withColumnRenamed("iso_date", "iso_date_existing")
 
         # Alinha os esquemas e faz a união dos DataFrames
-        combined_data = df.unionByName(existing_data, allowMissingColumns=True)
+        combined_data = df.union(existing_data)
 
         # Remove duplicatas
         distinct_data = combined_data.distinct()
