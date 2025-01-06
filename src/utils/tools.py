@@ -348,8 +348,6 @@ def save_data_mongo(spark: SparkSession, df: DataFrame, collection_name: str):
         spark (SparkSession): A sessão Spark.
         df (pyspark.sql.DataFrame): DataFrame contendo os novos dados a serem inseridos.
         collection_name (str): Nome da coleção no MongoDB.
-        mongo_uri (str): URI de conexão com o MongoDB.
-        pathSource (str): Caminho do diretório HDFS para armazenar a leitura incremental.
     """
     try:
         # Verifica se o DataFrame está vazio
@@ -359,6 +357,10 @@ def save_data_mongo(spark: SparkSession, df: DataFrame, collection_name: str):
 
         # Lê os dados existentes do MongoDB (incremental ou completo)
         existing_data = read_data_mongo(spark, collection_name)
+
+        # Verifica se existe a coluna 'iso_date' em ambos os DataFrames e renomeia, se necessário
+        if 'iso_date' in df.columns and 'iso_date' in existing_data.columns:
+            df = df.withColumnRenamed("iso_date", "iso_date_new")
 
         # Alinha os esquemas e faz a união dos DataFrames
         combined_data = df.unionByName(existing_data, allowMissingColumns=True)
