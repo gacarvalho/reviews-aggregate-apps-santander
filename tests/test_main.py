@@ -107,7 +107,7 @@ def test_processamento_reviews(spark, setup_test_data_google, setup_test_data_ap
     df3.write.mode("overwrite").parquet(path_apple)
 
     # Teste da função de processamento
-    df = processing_reviews(f"{path_google}/*.parquet", f"{path_apple}/*.parquet", f"{path_mongodb}/*.parquet")
+    df = processing_reviews(spark, f"{path_google}/*.parquet", f"{path_apple}/*.parquet", f"{path_mongodb}/*.parquet")
 
     assert df.count() > 0
     # Verifique se o número de registros no DataFrame é o esperado
@@ -137,7 +137,7 @@ def test_validate_ingest(spark, setup_test_data_google, setup_test_data_apple, s
     df3.write.mode("append").parquet(path_apple)
 
     # Teste da função de processamento
-    df = processing_reviews(f"{path_google}/*.parquet", f"{path_apple}/*.parquet", f"{path_mongodb}/*.parquet")
+    df = processing_reviews(spark, f"{path_google}/*.parquet", f"{path_apple}/*.parquet", f"{path_mongodb}/*.parquet")
 
 
     # Valida o DataFrame e coleta resultados
@@ -174,7 +174,7 @@ def test_save_data(spark, setup_test_data_google, setup_test_data_apple, setup_t
     df3.write.mode("append").parquet(path_apple)
 
     # Teste da função de processamento
-    df = processing_reviews(f"{path_google}/*.parquet", f"{path_apple}/*.parquet", f"{path_mongodb}/*.parquet")
+    df = processing_reviews(spark, f"{path_google}/*.parquet", f"{path_apple}/*.parquet", f"{path_mongodb}/*.parquet")
 
 
     # Valida o DataFrame e coleta resultados

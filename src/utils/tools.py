@@ -1,7 +1,7 @@
 import os, json, logging, sys, requests, unicodedata, pymongo, pyspark.sql.functions as F
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.functions import (
-    regexp_extract, max as spark_max, col, when, input_file_name, lit, date_format, to_date
+    regexp_extract, max as spark_max, col, when, input_file_name, lit, date_format, to_date, regexp_replace
 )
 from pyspark.sql.types import (
     MapType, StringType, ArrayType, BinaryType, StructType, StructField, DoubleType, LongType, IntegerType
@@ -11,16 +11,15 @@ from pathlib import Path
 from urllib.parse import quote_plus
 from unidecode import unidecode
 from pyspark.sql.functions import regexp_extract
+from elasticsearch import Elasticsearch
 try:
     from schema_gold import all_sources_agg_schema_gold
 except ModuleNotFoundError:
     from src.schema.schema_gold import all_sources_agg_schema_gold
 
 
-def processing_reviews(path_google_play, path_mongodb, path_apple_store):
+def processing_reviews(spark, path_google_play, path_mongodb, path_apple_store):
     try:
-        # Inicializa a sessão Spark
-        spark = SparkSession.builder.appName("CompassAggregation").getOrCreate()
 
         logging.info("[*] Iniciando o processo de agregação de dados")
 
@@ -62,56 +61,70 @@ def processing_reviews(path_google_play, path_mongodb, path_apple_store):
             logging.warning("[*] Nenhum dado carregado para Apple Store")
 
         # Verificar se algum dos DataFrames está vazio
-        if df_google_play.count() == 0 and df_mongodb.count() == 0 and df_apple_store.count() == 0:
+        countGoogle = df_google_play.count()
+        countMongo = df_mongodb.count()
+        countApple = df_apple_store.count()
+        if  countGoogle == 0 and countMongo == 0 and countApple == 0:
+
             logging.error("[*] Nenhum dado foi carregado para unificar.")
+            # JSON de erro
+            error_metrics = {
+                "timestamp": datetime.now().isoformat(),
+                "layer": "gold",
+                "project": "compass",
+                "job": "aggregate_apps_reviews",
+                "priority": "0",
+                "tower": "SBBR_COMPASS",
+                "client": "NA",
+                "error": f"Nenhum dado foi carregado para unificar. Volumetria Google: {countGoogle}, Mongo: {countMongo}, Apple: {countApple}"
+            }
+
+            metrics_json = json.dumps(error_metrics)
+
+            # Salvar métricas de erro no Elastic
+            save_metrics_job_fail(metrics_json)
             return None
 
         # Equalizando as colunas
         df_google_play_equalizado = df_google_play.select(
             col("id").alias("id"),
-            col("app").alias("app"),
-            col("rating").cast("string").alias("rating"), 
+            regexp_replace(col("app"), "_pf|_pj", "").alias("app"),
+            col("segmento").alias("segmento"),
+            col("rating").cast("int").cast("string").alias("rating"),
             col("iso_date").alias("iso_date"),
             col("title").alias("title"),
             col("snippet").alias("snippet"),
-            col("historical_data").alias("historical_data"),
             col("odate").alias("odate"),
             col("file_name").alias("file_name")
         ).withColumn("app_source", lit("google_play"))
 
         df_mongodb_equalizado = df_mongodb.select(
             col("id").alias("id"),
-            col("app").alias("app"),
+            regexp_replace(col("app"), "_pf|_pj", "").alias("app"),
+            col("segmento").alias("segmento"),
             col("rating").cast("string").alias("rating"),
             col("timestamp").alias("iso_date"), 
             col("comment").alias("title"), 
             col("comment").alias("snippet"),
-            col("historical_data").alias("historical_data"),
             col("odate").alias("odate"),
             col("file_name").alias("file_name")
         ).withColumn("app_source", lit("internal_database_mongodb"))
 
         df_apple_store_equalizado = df_apple_store.select(
             col("id").alias("id"),
-            col("app").alias("app"),
+            regexp_replace(col("app"), "_pf|_pj", "").alias("app"),
+            col("segmento").alias("segmento"),
             col("im_rating").cast("string").alias("rating"),
             col("updated").alias("iso_date"),
             col("title").alias("title"),
             col("content").alias("snippet"),
-            col("historical_data").alias("historical_data"),
             col("odate").alias("odate"),
             col("file_name").alias("file_name")
         ).withColumn("app_source", lit("apple_store"))
 
-        # Removendo a coluna 'historical_data' dos DataFrames
-        df_google_play_equalizado_sem_historical = df_google_play_equalizado.drop("historical_data")
-        df_mongodb_equalizado_sem_historical = df_mongodb_equalizado.drop("historical_data")
-        df_apple_store_equalizado_sem_historical = df_apple_store_equalizado.drop("historical_data")
-
-
 
         # Unificar os DataFrames
-        df_unificado = df_google_play_equalizado_sem_historical.union(df_mongodb_equalizado_sem_historical).union(df_apple_store_equalizado_sem_historical)
+        df_unificado = df_google_play_equalizado.union(df_mongodb_equalizado).union(df_apple_store_equalizado)
 
 
         # Verificar se o DataFrame unificado é válido e retorná-lo
@@ -119,7 +132,7 @@ def processing_reviews(path_google_play, path_mongodb, path_apple_store):
             logging.info("[*] Estrutura do DataFrame Unificado:")
             df_unificado.printSchema()
             df_unificado.show(5)
-            return df_unificado  # Retorna o DataFrame unificado
+            return df_unificado
         else:
             logging.error("[*] Erro ao criar o DataFrame unificado.")
             return None
@@ -142,7 +155,7 @@ def get_schema(df, schema):
 
 def save_reviews(reviews_df: DataFrame, directory: str):
     """
-    Salva os dados do DataFrame no formato Delta no diretório especificado.
+    Salva os dados do DataFrame no formato Parquet no diretório especificado.
 
     Args:
         reviews_df (DataFrame): DataFrame PySpark contendo as avaliações.
@@ -153,10 +166,26 @@ def save_reviews(reviews_df: DataFrame, directory: str):
         Path(directory).mkdir(parents=True, exist_ok=True)
 
         reviews_df.write.option("compression", "snappy").mode("overwrite").parquet(directory)
-        logging.info(f"[*] Dados salvos em {directory} no formato Delta")
+        logging.info(f"[*] Dados salvos em {directory} no formato Parquet")
 
     except Exception as e:
         logging.error(f"[*] Erro ao salvar os dados: {e}")
+        # JSON de erro
+        error_metrics = {
+            "timestamp": datetime.now().isoformat(),
+            "layer": "gold",
+            "project": "compass",
+            "job": "google_play_reviews",
+            "priority": "0",
+            "tower": "SBBR_COMPASS",
+            "client": "NA",
+            "error": str(e)
+        }
+
+        metrics_json = json.dumps(error_metrics)
+
+        # Salvar métricas de erro no Elastic
+        save_metrics_job_fail(metrics_json)
         exit(1)
 
 
@@ -177,6 +206,22 @@ def save_dataframe(df, path, label):
             logging.warning(f"[*] Nenhum dado {label} foi encontrado!")
     except Exception as e:
         logging.error(f"[*] Erro ao salvar dados {label}: {e}", exc_info=True)
+        # JSON de erro
+        error_metrics = {
+            "timestamp": datetime.now().isoformat(),
+            "layer": "gold",
+            "project": "compass",
+            "job": "google_play_reviews",
+            "priority": "0",
+            "tower": "SBBR_COMPASS",
+            "client": "NA",
+            "error": str(e)
+        }
+
+        metrics_json = json.dumps(error_metrics)
+
+        # Salvar métricas de erro no Elastic
+        save_metrics_job_fail(metrics_json)
         
 
 
@@ -257,6 +302,22 @@ def read_data(spark: SparkSession, schema: StructType, pathSource: str) -> DataF
         return df
     except Exception as e:
         logging.error(f"Erro ao ler os dados: {e}", exc_info=True)
+        # JSON de erro
+        error_metrics = {
+            "timestamp": datetime.now().isoformat(),
+            "layer": "gold",
+            "project": "compass",
+            "job": "google_play_reviews",
+            "priority": "0",
+            "tower": "SBBR_COMPASS",
+            "client": "NA",
+            "error": str(e)
+        }
+
+        metrics_json = json.dumps(error_metrics)
+
+        # Salvar métricas de erro no Elastic
+        save_metrics_job_fail(metrics_json)
         raise
 
 def save_data(spark: SparkSession, valid_df: DataFrame, invalid_df: DataFrame,path_target: str,  path_target_fail: str):
@@ -268,18 +329,67 @@ def save_data(spark: SparkSession, valid_df: DataFrame, invalid_df: DataFrame,pa
         save_dataframe(invalid_df, path_target_fail, "invalido")
     except Exception as e:
         logging.error(f"[*] Erro ao salvar os dados: {e}", exc_info=True)
+        # JSON de erro
+        error_metrics = {
+            "timestamp": datetime.now().isoformat(),
+            "layer": "gold",
+            "project": "compass",
+            "job": "google_play_reviews",
+            "priority": "0",
+            "tower": "SBBR_COMPASS",
+            "client": "NA",
+            "error": str(e)
+        }
+
+        metrics_json = json.dumps(error_metrics)
+
+        # Salvar métricas de erro no Elastic
+        save_metrics_job_fail(metrics_json)
         raise
 
-def save_metrics(metrics_json: str):
+def save_metrics(metrics_json):
     """
-    Salva as métricas no MongoDB.
+    Salva as métricas.
     """
+
+    ES_HOST = "http://elasticsearch:9200"
+    ES_INDEX = "compass_dt_datametrics"
+    ES_USER = os.environ["ES_USER"]
+    ES_PASS = os.environ["ES_PASS"]
+
+    # Conectar ao Elasticsearch
+    es = Elasticsearch(
+        [ES_HOST],
+        basic_auth=(ES_USER, ES_PASS)
+    )
+
     try:
+        # Converter JSON em dicionário
         metrics_data = json.loads(metrics_json)
-        write_to_mongo(metrics_data, "dt_datametrics_compass", overwrite=False)
-        logging.info(f"[*] Métricas da aplicação salvas: {metrics_json}")
+
+        # Inserir no Elasticsearch
+        response = es.index(index=ES_INDEX, document=metrics_data)
+
+        logging.info(f"[*] Métricas da aplicação salvas no Elasticsearch: {response}")
     except json.JSONDecodeError as e:
         logging.error(f"[*] Erro ao processar métricas: {e}", exc_info=True)
+
+        # JSON de erro
+        error_metrics = {
+            "timestamp": datetime.now().isoformat(),
+            "layer": "gold",
+            "project": "compass",
+            "job": "google_play_reviews",
+            "priority": "3",
+            "tower": "SBBR_COMPASS",
+            "client": "[NA]",
+            "error": str(e)
+        }
+
+        metrics_json = json.dumps(error_metrics)
+
+        # Salvar métricas de erro no Elastic
+        save_metrics_job_fail(metrics_json)
 
 
 def save_data_mongo(df, collection_name: str):
@@ -313,11 +423,29 @@ def save_data_mongo(df, collection_name: str):
 
 def save_metrics_job_fail(metrics_json):
     """
-    Salva as métricas no MongoDB.
+    Salva as métricas de aplicações com falhas
     """
+
+    ES_HOST = "http://elasticsearch:9200"
+    ES_INDEX = "compass_dt_datametrics_fail"
+    ES_USER = os.environ["ES_USER"]
+    ES_PASS = os.environ["ES_PASS"]
+
+    # Conectar ao Elasticsearch
+    es = Elasticsearch(
+        [ES_HOST],
+        basic_auth=(ES_USER, ES_PASS)
+    )
+
     try:
+        # Converter JSON em dicionário
         metrics_data = json.loads(metrics_json)
-        write_to_mongo(metrics_data, "dt_datametrics_fail_compass")
-        logging.info(f"[*] Métricas da aplicação salvas: {metrics_json}")
+
+        # Inserir no Elasticsearch
+        response = es.index(index=ES_INDEX, document=metrics_data)
+
+        logging.info(f"[*] Métricas da aplicação salvas no Elasticsearch: {response}")
     except json.JSONDecodeError as e:
         logging.error(f"[*] Erro ao processar métricas: {e}", exc_info=True)
+    except Exception as e:
+        logging.error(f"[*] Erro ao salvar métricas no Elasticsearch: {e}", exc_info=True)

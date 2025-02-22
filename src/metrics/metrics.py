@@ -1,4 +1,4 @@
-import json, os
+import json, os, logging
 import pyspark.sql.functions as F 
 from datetime import datetime
 from pyspark.sql.functions import col, from_json
@@ -7,6 +7,9 @@ from pyspark.sql.functions import coalesce, array_remove, collect_list, struct, 
 from pyspark.sql.types import StructType, StructField, StringType, ArrayType, MapType
 from sparkmeasure import StageMetrics
 import re
+
+# Configuração de logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class MetricsCollector:
     """
@@ -119,7 +122,7 @@ def print_validation_results(results: dict):
 
 def validate_ingest(spark: SparkSession, df: DataFrame) -> tuple:
     """
-    Valida um DataFrame de dados de ingestão.
+    Valida um DataFrame de dados de ingestão e compara com dados históricos.
 
     Args:
         df (DataFrame): O DataFrame a ser validado.
@@ -135,29 +138,27 @@ def validate_ingest(spark: SparkSession, df: DataFrame) -> tuple:
         - Verifica a existência de valores nulos em colunas críticas.
         - Verifica a consistência dos tipos de dados.
 
-    Códigos de retorno:
-        200: Sucesso
-        100: Nenhum valor nulo encontrado
-        101: Valores nulos encontrados
-        200: Nenhum registro duplicado encontrado
-        201: Registros duplicados encontrados
-        300: Consistência dos tipos de dados verificada com sucesso
-        301: Valores não numéricos encontrados
+    Codigos de retorno:
+        200: Sucesso (Nenhum problema encontrado)
+        400: Erro nos dados (Valores nulos ou tipos inválidos)
+        409: Conflito de dados (Registros duplicados encontrados)
     """
+    logging.info(f"[*] def validate_ingest: Iniciando o processamento!", exc_info=True)
 
     validation_results = {
         "duplicate_check": {"message": "", "status": True, "code": 200},
-        "null_check": {"message": "", "status": True, "code": 100},
-        "type_consistency_check": {"message": "", "status": True, "code": 300},
+        "null_check": {"message": "", "status": True, "code": 200},
+        "type_consistency_check": {"message": "", "status": True, "code": 200},
         "total_records": df.count(),
     }
 
+    logging.info(f"[*] def validate_ingest: Iniciando o processo de data quality", exc_info=True)
     # Verificação de duplicidade
     duplicates = df.groupBy("id").count().filter(col("count") > 1)
     duplicate_count = duplicates.count()
     if duplicate_count > 0:
         validation_results["duplicate_check"]["status"] = False
-        validation_results["duplicate_check"]["code"] = 201
+        validation_results["duplicate_check"]["code"] = 409
         validation_results["duplicate_check"]["message"] = f"Registros duplicados encontrados: {duplicate_count} registros com base no 'id'."
     else:
         validation_results["duplicate_check"]["status"] = True
@@ -172,26 +173,26 @@ def validate_ingest(spark: SparkSession, df: DataFrame) -> tuple:
     null_issues = {col: count for col, count in null_counts.items() if count > 0}
     if null_issues:
         validation_results["null_check"]["status"] = False
-        validation_results["null_check"]["code"] = 101
+        validation_results["null_check"]["code"] = 400
         validation_results["null_check"]["message"] = f"Valores nulos encontrados nas colunas: {null_issues}."
     else:
         validation_results["null_check"]["status"] = True
-        validation_results["null_check"]["code"] = 100
+        validation_results["null_check"]["code"] = 200
         validation_results["null_check"]["message"] = "Nenhum valor nulo encontrado nas colunas criticas."
 
     # Consistência dos tipos de dados
     invalid_rating = df.filter(~df.rating.cast("int").isNotNull())
     if invalid_rating.count() > 0:
         validation_results["type_consistency_check"]["status"] = False
-        validation_results["type_consistency_check"]["code"] = 301
+        validation_results["type_consistency_check"]["code"] = 400
         validation_results["type_consistency_check"]["message"] = "Valores não numericos encontrados na coluna 'rating'."
     else:
         validation_results["type_consistency_check"]["status"] = True
-        validation_results["type_consistency_check"]["code"] = 300
+        validation_results["type_consistency_check"]["code"] = 200
         validation_results["type_consistency_check"]["message"] = "Consistencia dos tipos de dados verificada com sucesso."
 
     cols = [
-        "id","app","rating","iso_date","title","snippet","odate","file_name","app_source"
+        "id","app","segmento","rating","iso_date","title","snippet","odate","file_name","app_source"
     ]
 
     # Modificação: Remover o uso de subtract e filtrar registros válidos

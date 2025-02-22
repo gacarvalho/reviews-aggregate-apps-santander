@@ -1,5 +1,6 @@
-import logging
+import sys
 import json
+import logging
 from pyspark.sql import SparkSession
 import pyspark.sql.functions as F
 from pyspark.sql.functions import (
@@ -7,7 +8,7 @@ from pyspark.sql.functions import (
 )
 from datetime import datetime
 from pyspark.sql.types import IntegerType, StringType
-
+from elasticsearch import Elasticsearch
 try:
     from tools import *
     from metrics import MetricsCollector, validate_ingest
@@ -24,17 +25,34 @@ def main():
     # Criação da sessão Spark
     spark = spark_session()
 
+    # Capturar argumentos da linha de comando
+    args = sys.argv
+
+    # Verificar se o número correto de argumentos foi passado
+    if len(args) != 2:
+        print("[*] Usage: spark-submit app.py <env> ")
+        sys.exit(1)
+
     try:
+
+        # Entrada e captura de variaveis e parametros
+        env = args[1]
+
         # Coleta de métricas
         metrics_collector = MetricsCollector(spark)
         metrics_collector.start_collection()
 
+        #paths
+
+        datePath = datetime.now().strftime("%Y%m%d")
 
         path_google_play = "/santander/silver/compass/reviews/googlePlay"
         path_mongodb = "/santander/silver/compass/reviews/mongodb"
         path_apple_store = "/santander/silver/compass/reviews/appleStore"
+        path_target = f"/santander/gold/compass/reviews/apps_santander_aggregate/odate={datePath}/"
+        path_target_fail = f"/santander/gold/compass/reviews_fail/apps_santander_aggregate/odate={datePath}/"
 
-        df = processing_reviews(path_google_play, path_mongodb, path_apple_store)
+        df = processing_reviews(spark, path_google_play, path_mongodb, path_apple_store)
 
         # Validação e separação dos dados
         valid_df, invalid_df, validation_results = validate_ingest(spark, df)
@@ -55,6 +73,7 @@ def main():
         df_consolidado = df.select(
             F.col("app").alias("app_nome"),
             F.col("app_source").alias("app_source"),
+            F.col("segmento").alias("segmento"),
             F.col("final_rating").alias("rating"),
             F.col("final_date").alias("date"),
             F.col("final_comment").alias("comment"),
@@ -80,31 +99,21 @@ def main():
             .otherwise(None)).alias("comentarios_negativos")
 
         # Agregações para a tabela Gold
-        gold_df = df_filtrado.groupBy("app_nome", "app_source", "periodo_referencia").agg(
+        gold_df = df_filtrado.groupBy("app_nome", "app_source", "periodo_referencia", upper("segmento").alias("segmento")).agg(
             F.round(F.avg("rating"), 1).alias("nota_media"),
-            F.round(
-                (F.max("rating") - F.min("rating")) / F.max("rating") * 100, 2
-            ).alias("nota_tendencia"),
             F.count("*").alias("avaliacoes_total"),
             comentarios_positivos,
             comentarios_negativos,
         ).withColumn("app_source", upper(col("app_source")))
 
         # Exibe o resultado
-        gold_df.orderBy(col("periodo_referencia").desc(), col("app_nome").desc()).show(gold_df.count(), truncate=False)
+        if env == "pre":
+            gold_df.orderBy(col("periodo_referencia").desc(), col("app_nome").desc()).show(gold_df.count(), truncate=False)
 
 
         # Coleta de métricas após processamento
         metrics_collector.end_collection()
         metrics_json = metrics_collector.collect_metrics(valid_df, invalid_df, validation_results, "gold_aggregate")
-
-        # Definindo caminhos
-        datePath = datetime.now().strftime("%Y%m%d")
-
-        # Salvando dados e métricas
-        path_target = f"/santander/gold/compass/reviews/apps_santander_aggregate/odate={datePath}/"
-        path_target_fail = f"/santander/gold/compass/reviews_fail/apps_santander_aggregate/odate={datePath}/"
-
 
         save_data(spark, valid_df, invalid_df,path_target, path_target_fail)
         save_data_mongo(gold_df.distinct(), "dt_d_view_gold_agg_compass") # salva visao gold no mongo
@@ -114,6 +123,7 @@ def main():
             F.upper("title").alias("title"),
             F.upper("snippet").alias("snippet"),
             upper("app_source").alias("app_source"),
+            upper("segmento").alias("segmento"),
             F.upper("app").alias("app"),
             valid_df["rating"].cast(IntegerType()).alias("rating"),
             # Padronizar o formato da data 'iso_date'
@@ -125,15 +135,6 @@ def main():
                 F.to_timestamp("iso_date", "yyyy-MM-dd'T'HH:mm:ss'Z'")
             ).otherwise(
                 F.to_timestamp("iso_date", "yyyy-MM-dd'T'HH:mm:ssZ")  # Caso tenha o fuso horário
-            ).alias("iso_date"),
-
-            # Usando date_format para garantir que todas as datas tenham 3 casas decimais de milissegundos
-            F.date_format(
-                F.when(
-                    F.col("iso_date").isNotNull(),
-                    F.col("iso_date")
-                ).otherwise(F.lit(None)),
-                "yyyy-MM-dd HH:mm:ss.SSS"
             ).alias("iso_date")
         )
 
@@ -142,20 +143,22 @@ def main():
 
     except Exception as e:
         logging.error(f"[*] An error occurred: {e}", exc_info=True)
+
         # JSON de erro
         error_metrics = {
-            "data_e_hora": datetime.now().isoformat(),
-            "camada": "gold",
-            "grupo": "compass",
+            "timestamp": datetime.now().isoformat(),
+            "layer": "gold",
+            "project": "compass",
             "job": "aggregate_apps_reviews",
-            "relevancia": "0",
-            "torre": "SBBR_COMPASS",
-            "erro": str(e)
+            "priority": "0",
+            "tower": "SBBR_COMPASS",
+            "client": "NA",
+            "error": str(e)
         }
 
         metrics_json = json.dumps(error_metrics)
 
-        # Salvar métricas de erro no MongoDB
+        # Salvar métricas de erro no Elastic
         save_metrics_job_fail(metrics_json)
         
 
