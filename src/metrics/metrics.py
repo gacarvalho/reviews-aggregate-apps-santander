@@ -55,8 +55,10 @@ class MetricsCollector:
             raise ValueError("[*] O tempo de início ou término não foi definido corretamente. Verifique a execução dos métodos start_collection e end_collection.")
 
         total_time = self.end_time - self.start_time
+        formatted_time = f"{total_time.total_seconds() / 60:.2f} min"
         start_ts = self.start_time.strftime("%Y-%m-%d %H:%M:%S")
         end_ts = self.end_time.strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = datetime.now().strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
         memory_used = self.spark.sparkContext._jvm.org.apache.spark.util.SizeEstimator.estimate(valid_df._jdf) / (1024 * 1024)
         data_nodes_count = len(self.spark.sparkContext.getConf().get("spark.executor.instances", "1").split(","))
@@ -76,12 +78,16 @@ class MetricsCollector:
         success_count = sum(1 for result in validation_metrics.values() if result["status"])
         error_count = len(validation_metrics) - success_count
 
+        # Convertendo "segmento" para uma lista de strings
+        segmentos_unicos = [str(row["segmento"]) if row["segmento"] is not None else "UNKNOWN"
+                            for row in valid_df.select("segmento").distinct().collect()]
+
         metrics = {
             "application_id": self.spark.sparkContext.applicationId,
-            "sigla": {
+            "owner": {
                 "sigla": "DT",
                 "projeto": "compass",
-                "cat": "gold_aggregate"
+                "layer_lake": "gold"
             },
             "valid_data": {
                 "count": count_valid,
@@ -92,13 +98,14 @@ class MetricsCollector:
                 "percentage": (count_invalid / total_records * 100) if total_records > 0 else 0.0
             },
             "total_records": total_records,
-            "total_processing_time": str(total_time),
+            "total_processing_time": formatted_time,
             "memory_used": memory_used,
             "data_nodes_count": data_nodes_count,
             "stages": stage_metrics_dict,
             "validation_results": validation_metrics,
             "success_count": success_count,
             "error_count": error_count,
+            "type_client": ",".join(segmentos_unicos).upper() if segmentos_unicos else "NA",
             "source": {
                 "app": id_app,
                 "search": "all_sources"
@@ -106,7 +113,8 @@ class MetricsCollector:
             "_ts": {
                 "compass_start_ts": start_ts,
                 "compass_end_ts": end_ts
-            }
+            },
+            "timestamp": timestamp
         }
 
         return json.dumps(metrics)
@@ -120,7 +128,7 @@ def print_validation_results(results: dict):
             if result["message"]:
                 print(f"  -> {result['message']}\n")
 
-def validate_ingest(spark: SparkSession, df: DataFrame) -> tuple:
+def validate_ingest(df: DataFrame) -> tuple:
     """
     Valida um DataFrame de dados de ingestão e compara com dados históricos.
 
@@ -192,7 +200,7 @@ def validate_ingest(spark: SparkSession, df: DataFrame) -> tuple:
         validation_results["type_consistency_check"]["message"] = "Consistencia dos tipos de dados verificada com sucesso."
 
     cols = [
-        "id","app","segmento","rating","iso_date","title","snippet","odate","file_name","app_source"
+        "id","app","segmento","rating","iso_date","title","snippet","app_source"
     ]
 
     # Modificação: Remover o uso de subtract e filtrar registros válidos
@@ -223,4 +231,10 @@ def validate_ingest(spark: SparkSession, df: DataFrame) -> tuple:
 
     print_validation_results(validation_results)
 
-    return valid_records, invalid_records, validation_results
+
+    odate = datetime.now().strftime("%Y%m%d")
+
+    valid_df = valid_records.withColumn("odate", lit(odate))
+    invalid_df = invalid_records.withColumn("odate", lit(odate))
+
+    return valid_df, invalid_df, validation_results

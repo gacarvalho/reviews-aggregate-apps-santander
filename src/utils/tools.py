@@ -12,10 +12,31 @@ from urllib.parse import quote_plus
 from unidecode import unidecode
 from pyspark.sql.functions import regexp_extract
 from elasticsearch import Elasticsearch
-try:
-    from schema_gold import all_sources_agg_schema_gold
-except ModuleNotFoundError:
-    from src.schema.schema_gold import all_sources_agg_schema_gold
+from pyspark.sql.window import Window
+
+
+def log_error(e, df=None, sufix=0):
+    """Gera e salva métricas de erro no Elastic."""
+
+    # Convertendo "segmento" para uma lista de strings, se df for válido
+    if sufix == 1 and df is not None:
+        segmentos_unicos = [row["segmento"] for row in df.select("segmento").distinct().collect()]
+    else:
+        segmentos_unicos = "NA"
+
+    error_metrics = {
+        "timestamp": datetime.now().isoformat(),
+        "layer": "gold",
+        "project": "compass",
+        "job": "aggregate_apps_reviews",
+        "priority": "0",
+        "tower": "SBBR_COMPASS",
+        "client": segmentos_unicos,
+        "error": str(e)
+    }
+
+    # Serializa para JSON e salva no MongoDB
+    save_metrics_job_fail(json.dumps(error_metrics))
 
 
 def processing_reviews(spark, path_google_play, path_mongodb, path_apple_store):
@@ -65,24 +86,9 @@ def processing_reviews(spark, path_google_play, path_mongodb, path_apple_store):
         countMongo = df_mongodb.count()
         countApple = df_apple_store.count()
         if  countGoogle == 0 and countMongo == 0 and countApple == 0:
-
             logging.error("[*] Nenhum dado foi carregado para unificar.")
-            # JSON de erro
-            error_metrics = {
-                "timestamp": datetime.now().isoformat(),
-                "layer": "gold",
-                "project": "compass",
-                "job": "aggregate_apps_reviews",
-                "priority": "0",
-                "tower": "SBBR_COMPASS",
-                "client": "NA",
-                "error": f"Nenhum dado foi carregado para unificar. Volumetria Google: {countGoogle}, Mongo: {countMongo}, Apple: {countApple}"
-            }
+            log_error(e, spark.createDataFrame([], StructType([])), 0)
 
-            metrics_json = json.dumps(error_metrics)
-
-            # Salvar métricas de erro no Elastic
-            save_metrics_job_fail(metrics_json)
             return None
 
         # Equalizando as colunas
@@ -123,16 +129,32 @@ def processing_reviews(spark, path_google_play, path_mongodb, path_apple_store):
         ).withColumn("app_source", lit("apple_store"))
 
 
-        # Unificar os DataFrames
-        df_unificado = df_google_play_equalizado.union(df_mongodb_equalizado).union(df_apple_store_equalizado)
+        # Definição das colunas a serem selecionadas
+        cols = ["id", "app", "segmento", "rating", "iso_date", "title", "snippet", "app_source"]
+
+        # Unindo os DataFrames (sem distinct)
+        df_unificado = (
+            df_google_play_equalizado.select(cols)
+            .union(df_mongodb_equalizado.select(cols))
+            .union(df_apple_store_equalizado.select(cols))
+        )
+
+        # Criando uma janela particionada pelo "id" para remover duplicatas de forma eficiente
+        window_spec = Window.partitionBy("id").orderBy(F.lit(1))
+
+        df_final = (
+            df_unificado.withColumn("row_number", F.row_number().over(window_spec))
+            .filter(F.col("row_number") == 1)
+            .drop("row_number")
+        )
 
 
         # Verificar se o DataFrame unificado é válido e retorná-lo
-        if df_unificado is not None:
+        if df_final is not None:
             logging.info("[*] Estrutura do DataFrame Unificado:")
-            df_unificado.printSchema()
-            df_unificado.show(5)
-            return df_unificado
+            df_final.printSchema()
+            df_final.show(5)
+            return df_final
         else:
             logging.error("[*] Erro ao criar o DataFrame unificado.")
             return None
@@ -140,17 +162,6 @@ def processing_reviews(spark, path_google_play, path_mongodb, path_apple_store):
     except Exception as e:
         logging.error(f"[*] Erro ao processar os dados: {e}")
         raise
-
-def get_schema(df, schema):
-    """
-    Obtém o DataFrame a seguir o schema especificado.
-    """
-    for field in schema.fields:
-        if field.dataType == IntegerType():
-            df = df.withColumn(field.name, df[field.name].cast(IntegerType()))
-        elif field.dataType == StringType():
-            df = df.withColumn(field.name, df[field.name].cast(StringType()))
-    return df.select([field.name for field in schema.fields])
 
 
 def save_reviews(reviews_df: DataFrame, directory: str):
@@ -170,23 +181,7 @@ def save_reviews(reviews_df: DataFrame, directory: str):
 
     except Exception as e:
         logging.error(f"[*] Erro ao salvar os dados: {e}")
-        # JSON de erro
-        error_metrics = {
-            "timestamp": datetime.now().isoformat(),
-            "layer": "gold",
-            "project": "compass",
-            "job": "google_play_reviews",
-            "priority": "0",
-            "tower": "SBBR_COMPASS",
-            "client": "NA",
-            "error": str(e)
-        }
-
-        metrics_json = json.dumps(error_metrics)
-
-        # Salvar métricas de erro no Elastic
-        save_metrics_job_fail(metrics_json)
-        exit(1)
+        log_error(e, reviews_df, 1)
 
 
 def save_dataframe(df, path, label):
@@ -194,10 +189,6 @@ def save_dataframe(df, path, label):
     Salva o DataFrame em formato parquet e loga a operação.
     """
     try:
-        schema = all_sources_agg_schema_gold()
-
-        # Alinhar o DataFrame ao schema definido
-        df = get_schema(df, schema)
 
         if df.limit(1).count() > 0:  # Verificar existência de dados
             logging.info(f"[*] Salvando dados {label} para: {path}")
@@ -206,22 +197,7 @@ def save_dataframe(df, path, label):
             logging.warning(f"[*] Nenhum dado {label} foi encontrado!")
     except Exception as e:
         logging.error(f"[*] Erro ao salvar dados {label}: {e}", exc_info=True)
-        # JSON de erro
-        error_metrics = {
-            "timestamp": datetime.now().isoformat(),
-            "layer": "gold",
-            "project": "compass",
-            "job": "google_play_reviews",
-            "priority": "0",
-            "tower": "SBBR_COMPASS",
-            "client": "NA",
-            "error": str(e)
-        }
-
-        metrics_json = json.dumps(error_metrics)
-
-        # Salvar métricas de erro no Elastic
-        save_metrics_job_fail(metrics_json)
+        log_error(e, df, 1)
         
 
 
@@ -273,22 +249,6 @@ def write_to_mongo(dados_feedback: dict, table_id: str, overwrite=False):
         client.close()
 
 
-def define_schema() -> StructType:
-    """
-    Define o schema para os dados dos reviews.
-    """
-    return StructType([
-        StructField("avatar", StringType(), True),
-        StructField("date", StringType(), True),
-        StructField("id", StringType(), True),
-        StructField("iso_date", StringType(), True),
-        StructField("likes", LongType(), True),
-        StructField("rating", DoubleType(), True),
-        StructField("response", MapType(StringType(), StringType(), True), True),
-        StructField("snippet", StringType(), True),
-        StructField("title", StringType(), True)
-    ])
-
 def read_data(spark: SparkSession, schema: StructType, pathSource: str) -> DataFrame:
     """
     Lê os dados de um caminho Parquet e retorna um DataFrame.
@@ -302,22 +262,7 @@ def read_data(spark: SparkSession, schema: StructType, pathSource: str) -> DataF
         return df
     except Exception as e:
         logging.error(f"Erro ao ler os dados: {e}", exc_info=True)
-        # JSON de erro
-        error_metrics = {
-            "timestamp": datetime.now().isoformat(),
-            "layer": "gold",
-            "project": "compass",
-            "job": "google_play_reviews",
-            "priority": "0",
-            "tower": "SBBR_COMPASS",
-            "client": "NA",
-            "error": str(e)
-        }
-
-        metrics_json = json.dumps(error_metrics)
-
-        # Salvar métricas de erro no Elastic
-        save_metrics_job_fail(metrics_json)
+        log_error(e, spark.createDataFrame([], StructType([])), 0)
         raise
 
 def save_data(spark: SparkSession, valid_df: DataFrame, invalid_df: DataFrame,path_target: str,  path_target_fail: str):
@@ -329,22 +274,7 @@ def save_data(spark: SparkSession, valid_df: DataFrame, invalid_df: DataFrame,pa
         save_dataframe(invalid_df, path_target_fail, "invalido")
     except Exception as e:
         logging.error(f"[*] Erro ao salvar os dados: {e}", exc_info=True)
-        # JSON de erro
-        error_metrics = {
-            "timestamp": datetime.now().isoformat(),
-            "layer": "gold",
-            "project": "compass",
-            "job": "google_play_reviews",
-            "priority": "0",
-            "tower": "SBBR_COMPASS",
-            "client": "NA",
-            "error": str(e)
-        }
-
-        metrics_json = json.dumps(error_metrics)
-
-        # Salvar métricas de erro no Elastic
-        save_metrics_job_fail(metrics_json)
+        log_error(e, valid_df, 1)
         raise
 
 def save_metrics(metrics_json):
@@ -373,16 +303,15 @@ def save_metrics(metrics_json):
         logging.info(f"[*] Métricas da aplicação salvas no Elasticsearch: {response}")
     except json.JSONDecodeError as e:
         logging.error(f"[*] Erro ao processar métricas: {e}", exc_info=True)
-
         # JSON de erro
         error_metrics = {
             "timestamp": datetime.now().isoformat(),
             "layer": "gold",
             "project": "compass",
-            "job": "google_play_reviews",
+            "job": "reviews_aggregate_reviews",
             "priority": "3",
             "tower": "SBBR_COMPASS",
-            "client": "[NA]",
+            "client": "NA",
             "error": str(e)
         }
 
@@ -416,6 +345,7 @@ def save_data_mongo(df, collection_name: str):
 
     except Exception as e:
         logging.error(f"[*] Erro ao sobrescrever a coleção '{collection_name}': {e}", exc_info=True)
+        log_error(e, df, 1)
 
 
 
