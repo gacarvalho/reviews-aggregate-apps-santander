@@ -306,10 +306,6 @@ def save_dataframe(
     full_path = Path(path)
 
     try:
-        if schema:
-            logger.info(f"[*] Aplicando schema para dados {label}")
-            df = get_schema(df, schema)
-
         df_partition = df.withColumn(partition_column, lit(current_date))
 
         if not df_partition.head(1):
