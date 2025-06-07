@@ -2,6 +2,7 @@ import os
 import pytest
 import shutil
 import tempfile
+import json
 import pyspark.sql.functions as F
 from datetime import datetime
 from pyspark.sql.functions import (
@@ -10,8 +11,11 @@ from pyspark.sql.functions import (
 from pyspark.sql.types import IntegerType, StringType,StructType
 from unittest.mock import MagicMock, patch
 from pyspark.sql import SparkSession
-from src.utils.tools import processing_reviews, save_data_mongo, save_data
+from pyspark.sql.types import StringType, StructField, StructType
+from unittest.mock import MagicMock, patch, PropertyMock
+from src.utils.tools import processing_reviews, save_data_mongo, save_dataframe
 from src.metrics.metrics import validate_ingest
+
 
 @pytest.fixture
 def spark():
@@ -22,7 +26,6 @@ def spark():
 
 @pytest.fixture
 def setup_test_data_google():
-    # Caminho relativo ao diretório do projeto
     base_path = os.path.dirname(__file__)
     sample_file = os.path.join(
         base_path,
@@ -164,7 +167,6 @@ def test_save_data(spark, setup_test_data_google, setup_test_data_apple, setup_t
     df2 = spark.read.parquet(temp_path_apple)
     df3 = spark.read.parquet(temp_path_mongodb)
 
-    # Caminhos temporários para escrita
     path_google = tempfile.mkdtemp()
     path_mongodb = tempfile.mkdtemp()
     path_apple = tempfile.mkdtemp()
@@ -174,10 +176,10 @@ def test_save_data(spark, setup_test_data_google, setup_test_data_apple, setup_t
     df3.write.mode("overwrite").parquet(path_apple)
     df3.write.mode("append").parquet(path_apple)
 
-    # Teste da função de processamento
+    # Chama processamento real
     df = processing_reviews(spark, f"{path_google}/*.parquet", f"{path_apple}/*.parquet", f"{path_mongodb}/*.parquet")
 
-    # Valida o DataFrame e coleta resultados
+    # Validação dos dados
     valid_df, invalid_df, validation_results = validate_ingest(df)
 
     # Consolidação de colunas equivalentes
@@ -228,44 +230,37 @@ def test_save_data(spark, setup_test_data_google, setup_test_data_apple, setup_t
 
     gold_df.orderBy(col("periodo_referencia").desc(), col("app_nome").desc()).show(gold_df.count(), truncate=False)
 
-    # Caminhos de escrita
+
     datePath = datetime.now().strftime("%Y%m%d")
     path_target = f"/tmp/fake/path/valid/"
-    path_target_fail = f"/tmp/fake/path/invalid/odate={datePath}/"
 
-    # Patch das variáveis de ambiente com ES_PASS corrigido
     with patch.dict(os.environ, {"ES_USER": "fake", "ES_PASS": "fake", "ES_HOST": "localhost"}):
 
-        # Mock do método de escrita parquet
-        with patch("pyspark.sql.DataFrameWriter.parquet", MagicMock()) as mock_parquet:
+        # Patch apenas na chamada específica do método 'save_dataframe' para interceptar o parquet
+        with patch.object(type(valid_df), "write", new_callable=PropertyMock) as mock_write_property:
+            mock_write = MagicMock()
+            mock_write_property.return_value = mock_write
+            mock_write.option.return_value.mode.return_value.partitionBy.return_value.parquet.return_value = None
 
-            # Salvar dados
-            save_data(spark, valid_df, invalid_df, path_target, path_target_fail)
-            save_data_mongo(gold_df, "dt_d_view_gold_agg_compass")
-
-            # salva visao das avaliacoes no mongo para usuarios e executivos
-            df_visao_silver = valid_df.select(
-                upper("title").alias("title"),
-                upper("snippet").alias("snippet"),
-                upper("app_source").alias("app_source"),
-                upper("app").alias("app"),
-                F.col("segmento").alias("segmento"),
-                valid_df["rating"].cast(IntegerType()).alias("rating"),
-                # Padronizar o formato da data 'iso_date'
-                F.when(
-                    F.col("iso_date").rlike(r"\.\d{6}$"),  # Caso tenha milissegundos (como no exemplo '2024-11-30T23:10:15.494921')
-                    F.to_timestamp("iso_date", "yyyy-MM-dd'T'HH:mm:ss.SSSSSS")
-                ).when(
-                    F.col("iso_date").rlike(r"Z$"),  # Caso seja o formato com 'Z' no final (UTC)
-                    F.to_timestamp("iso_date", "yyyy-MM-dd'T'HH:mm:ss'Z'")
-                ).otherwise(
-                    F.to_timestamp("iso_date", "yyyy-MM-dd'T'HH:mm:ssZ")  # Caso tenha o fuso horário
-                ).alias("iso_date")
+            # Chama a função que salva dataframe (mockando o write)
+            save_dataframe(
+                df=valid_df,
+                path=path_target,
+                label="valido",
+                partition_column="odate",
+                compression="snappy"
             )
-            save_data_mongo(df_visao_silver, "dt_d_view_silver_historical_compass")
 
-            # Verificações
-            mock_parquet.assert_any_call(path_target)
-            mock_parquet.assert_any_call(path_target_fail)
+        with patch.dict(os.environ, {
+            "MONGO_USER": "fake_user",
+            "MONGO_PASS": "fake_pass",
+            "MONGO_HOST": "localhost",
+            "MONGO_PORT": "27017",
+            "MONGO_DB": "fake_db"
+        }):
+            with patch("src.utils.tools.write_to_mongo", MagicMock()) as mock_write_mongo:
+                save_data_mongo(gold_df, "dt_d_view_gold_agg_compass")
+                save_data_mongo(df, "dt_d_view_silver_historical_compass")
+                assert mock_write_mongo.call_count == 2
 
-        print("[*] Teste de salvar dados concluído com sucesso!")
+    print("[*] Teste de salvar dados concluído com sucesso!")

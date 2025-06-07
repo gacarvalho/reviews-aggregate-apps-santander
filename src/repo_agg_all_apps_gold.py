@@ -1,14 +1,16 @@
+import os
 import sys
 import json
 import logging
-from pyspark.sql import SparkSession
+from datetime import datetime
+from typing import Tuple
+from pyspark.sql import SparkSession, DataFrame
 import pyspark.sql.functions as F
 from pyspark.sql.functions import (
-    col, coalesce, lit, avg, max, min, count, round, when, input_file_name, regexp_extract, upper
+    col, coalesce, lit, avg, count, when, upper
 )
-from datetime import datetime
-from pyspark.sql.types import IntegerType, StringType,StructType
-from elasticsearch import Elasticsearch
+from pyspark.sql.types import IntegerType, StructType
+
 try:
     from tools import *
     from metrics import MetricsCollector, validate_ingest
@@ -16,152 +18,191 @@ except ModuleNotFoundError:
     from src.utils.tools import *
     from src.metrics.metrics import MetricsCollector, validate_ingest
 
+# Configuração centralizada
+FORMAT = "parquet"
+PARTITION_COLUMN = "odate"
+COMPRESSION_TYPE = "snappy"
+ENV_PRE_VALUE = "pre"
+ELASTIC_INDEX_SUCCESS = "compass_dt_datametrics"
+ELASTIC_INDEX_FAIL = "compass_dt_datametrics_fail"
 
-# Configuração de logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+PATH_GOOGLE_PLAY = "/santander/silver/compass/reviews/googlePlay"
+PATH_MONGODB = "/santander/silver/compass/reviews/mongodb"
+PATH_APPLE_STORE = "/santander/silver/compass/reviews/appleStore"
+PATH_GOLD_BASE = "/santander/gold/compass/reviews/apps_santander_aggregate/"
+PATH_GOLD_FAIL_BASE = "/santander/gold/compass/reviews_fail/apps_santander_aggregate/"
 
-def main():
+# Constantes de regex
+PERIODO_REGEX = r"^\\d{4}-\\d{2}$"
+REGEX_POSITIVO = r"(?i)\\b(ótimo|excelente|bom)\\b(?!.*\\b(não|nem|nunca|jamais)\\b)"
+REGEX_NEGATIVO = r"(?i)\\b(ruim|péssimo|horrível)\\b(?!.*\\b(não|nem|nunca|jamais)\\b)"
 
-    # Criação da sessão Spark
-    spark = spark_session()
+# Logging estruturado
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(module)s - %(funcName)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
 
-    # Capturar argumentos da linha de comando
-    args = sys.argv
+class PipelineConfig:
+    def __init__(self, env: str):
+        self.env = env
+        self.date_str = datetime.now().strftime("%Y%m%d")
+        self.path_google= f"{PATH_GOOGLE_PLAY}/odate={self.date_str}/"
+        self.path_apple= f"{PATH_APPLE_STORE}/odate={self.date_str}/"
+        self.path_internaldatabase= f"{PATH_MONGODB}/odate={self.date_str}/"
+        self.path_target = f"{PATH_GOLD_BASE}odate={self.date_str}/"
+        self.path_target_fail = f"{PATH_GOLD_FAIL_BASE}odate={self.date_str}/"
 
-    # Verificar se o número correto de argumentos foi passado
-    if len(args) != 2:
-        print("[*] Usage: spark-submit app.py <env> ")
-        sys.exit(1)
-
-    try:
-
-        # Entrada e captura de variaveis e parametros
-        env = args[1]
-
-        # Coleta de métricas
-        metrics_collector = MetricsCollector(spark)
-        metrics_collector.start_collection()
-
-        #paths
-
-        datePath = datetime.now().strftime("%Y%m%d")
-
-        path_google_play = "/santander/silver/compass/reviews/googlePlay"
-        path_mongodb = "/santander/silver/compass/reviews/mongodb"
-        path_apple_store = "/santander/silver/compass/reviews/appleStore"
-        path_target = f"/santander/gold/compass/reviews/apps_santander_aggregate/odate={datePath}/"
-        path_target_fail = f"/santander/gold/compass/reviews_fail/apps_santander_aggregate/odate={datePath}/"
-
-        df = processing_reviews(spark, path_google_play, path_mongodb, path_apple_store)
-
-        # Validação e separação dos dados
-        valid_df, invalid_df, validation_results = validate_ingest(df)
-
-        # Consolidação de colunas equivalentes
-        df = valid_df.withColumn("rating", F.col("rating").cast("double")) \
-            .withColumn("final_rating", F.coalesce(F.col("rating"), F.lit(None).cast("double"))) \
-            .withColumn("final_date", F.col("iso_date")) \
-            .withColumn("final_comment", F.coalesce(F.col("snippet"), F.col("title"))) \
-            .withColumn("final_app_version", F.lit(None)) \
-            .withColumn(
-                "final_name_client",
-                F.when(F.col("snippet").isNotNull(), F.col("title"))
-                .otherwise(F.lit(None))
-            )
-
-        # Seleciona apenas as colunas consolidadas para facilitar o processamento
-        df_consolidado = df.select(
-            F.col("app").alias("app_nome"),
-            F.col("app_source").alias("app_source"),
-            F.col("segmento").alias("segmento"),
-            F.col("final_rating").alias("rating"),
-            F.col("final_date").alias("date"),
-            F.col("final_comment").alias("comment"),
-            F.col("final_app_version").alias("app_version"),
-            F.col("final_name_client").alias("name_client")
-        )
-
-        # Converte o app_nome para uppercase
-        df_consolidado = df_consolidado.withColumn("app_nome", upper(F.col("app_nome")))
-
-        # Converte a data para o formato YYYY-MM
-        df_consolidado = df_consolidado.withColumn("periodo_referencia", F.col("date").substr(1, 7))
-        df_filtrado = df_consolidado.filter(F.col("periodo_referencia").rlike(r"^\d{4}-\d{2}$"))
-
-        # Regex mais robusta para comentários positivos
-        comentarios_positivos = F.count(F.when(
-            F.col("comment").rlike(r"(?i)\b(ótimo|excelente|bom)\b(?!.*\b(não|nem|nunca|jamais)\b)"), 1)
-            .otherwise(None)).alias("comentarios_positivos")
-
-        # Regex mais robusta para comentários negativos
-        comentarios_negativos = F.count(F.when(
-            F.col("comment").rlike(r"(?i)\b(ruim|péssimo|horrível)\b(?!.*\b(não|nem|nunca|jamais)\b)"), 1)
-            .otherwise(None)).alias("comentarios_negativos")
-
-        # Agregações para a tabela Gold
-        gold_df = df_filtrado.groupBy("app_nome", "app_source", "periodo_referencia", upper("segmento").alias("segmento")).agg(
-            F.round(F.avg("rating"), 1).alias("nota_media"),
-            F.count("*").alias("avaliacoes_total"),
-            comentarios_positivos,
-            comentarios_negativos,
-        ).withColumn("app_source", upper(col("app_source")))
-
-        # Exibe o resultado
-        if env == "pre":
-            gold_df.orderBy(col("periodo_referencia").desc(), col("app_nome").desc()).show(gold_df.count(), truncate=False)
-
-
-        # Coleta de métricas após processamento
-        metrics_collector.end_collection()
-        metrics_json = metrics_collector.collect_metrics(valid_df, invalid_df, validation_results, "gold_aggregate")
-
-        save_data(spark, gold_df, invalid_df,path_target, path_target_fail)
-        save_data_mongo(gold_df.distinct(), "dt_d_view_gold_agg_compass") # salva visao gold no mongo
-
-        # salva visao das avaliacoes no mongo para usuarios e executivos
-        df_visao_silver = valid_df.select(
-            upper("title").alias("title"),
-            upper("snippet").alias("snippet"),
-            upper("app_source").alias("app_source"),
-            upper("app").alias("app"),
-            F.col("segmento").alias("segmento"),
-            valid_df["rating"].cast(IntegerType()).alias("rating"),
-            # Padronizar o formato da data 'iso_date'
-            F.when(
-                F.col("iso_date").rlike(r"\.\d{6}$"),  # Caso tenha milissegundos (como no exemplo '2024-11-30T23:10:15.494921')
-                F.to_timestamp("iso_date", "yyyy-MM-dd'T'HH:mm:ss.SSSSSS")
-            ).when(
-                F.col("iso_date").rlike(r"Z$"),  # Caso seja o formato com 'Z' no final (UTC)
-                F.to_timestamp("iso_date", "yyyy-MM-dd'T'HH:mm:ss'Z'")
-            ).otherwise(
-                F.to_timestamp("iso_date", "yyyy-MM-dd'T'HH:mm:ssZ")  # Caso tenha o fuso horário
-            ).alias("iso_date")
-        )
-
-        save_data_mongo(df_visao_silver.distinct(), "dt_d_view_silver_historical_compass")
-        save_metrics(metrics_json)
-
-    except Exception as e:
-        logging.error(f"[*] An error occurred: {e}", exc_info=True)
-        log_error(e, spark.createDataFrame([], StructType([])), 0)
-
-
-
-def spark_session():
-    """
-    Cria e retorna uma sessão Spark.
-    """
+def create_spark_session() -> SparkSession:
     try:
         spark = SparkSession.builder \
             .appName("App Reviews [aggregate]") \
             .config("spark.jars.packages", "org.apache.spark:spark-measure_2.12:0.16") \
             .config("spark.sql.parquet.enableVectorizedReader", "false") \
             .getOrCreate()
+        logger.info("[*] Spark Session criada com sucesso.")
         return spark
     except Exception as e:
-        logging.error(f"[*] Failed to create SparkSession: {e}", exc_info=True)
+        logger.error("[*] Falha ao criar SparkSession", exc_info=True)
+        save_metrics(
+            metrics_type="fail",
+            index=ELASTIC_INDEX_FAIL,
+            error=e
+        )
         raise
+
+def process_reviews_columns(df: DataFrame) -> DataFrame:
+    return df.withColumn("rating", col("rating").cast("double")) \
+        .withColumn("final_rating", coalesce(col("rating"), lit(None).cast("double"))) \
+        .withColumn("final_date", col("iso_date")) \
+        .withColumn("final_comment", coalesce(col("snippet"), col("title"))) \
+        .withColumn("final_app_version", lit(None)) \
+        .withColumn("final_name_client", when(col("snippet").isNotNull(), col("title")).otherwise(lit(None)))
+
+def build_consolidated_df(df: DataFrame) -> DataFrame:
+    return df.select(
+        upper(col("app")).alias("app_nome"),
+        upper(col("app_source")).alias("app_source"),
+        upper(col("segmento")).alias("segmento"),
+        col("final_rating").alias("rating"),
+        col("final_date").alias("date"),
+        col("final_comment").alias("comment"),
+        col("final_app_version").alias("app_version"),
+        col("final_name_client").alias("name_client")
+    ).withColumn("periodo_referencia", col("date").substr(1, 7))
+
+def create_silver_view(df: DataFrame) -> DataFrame:
+    return df.select(
+        upper("title").alias("title"),
+        upper("snippet").alias("snippet"),
+        upper("app_source").alias("app_source"),
+        upper("app").alias("app"),
+        col("segmento"),
+        col("rating").cast(IntegerType()).alias("rating"),
+        when(
+            col("iso_date").rlike(r"\\.\\d{6}$"),
+            F.to_timestamp("iso_date", "yyyy-MM-dd'T'HH:mm:ss.SSSSSS")
+        ).when(
+            col("iso_date").rlike(r"Z$"),
+            F.to_timestamp("iso_date", "yyyy-MM-dd'T'HH:mm:ss'Z'")
+        ).otherwise(
+            F.to_timestamp("iso_date", "yyyy-MM-dd'T'HH:mm:ssZ")
+        ).alias("iso_date")
+    )
+
+def execute_pipeline(spark: SparkSession, env: str) -> None:
+    try:
+        config = PipelineConfig(env)
+        metrics_collector = MetricsCollector(spark)
+        metrics_collector.start_collection()
+
+        df = processing_reviews(spark, PATH_GOOGLE_PLAY, PATH_MONGODB, PATH_APPLE_STORE)
+        valid_df, invalid_df, validation_results = validate_ingest(df)
+
+        df = process_reviews_columns(valid_df)
+        df_consolidado = build_consolidated_df(df)
+        df_filtrado = df_consolidado.filter(col("periodo_referencia").rlike(PERIODO_REGEX))
+
+        comentarios_positivos = count(when(col("comment").rlike(REGEX_POSITIVO), 1)).alias("comentarios_positivos")
+        comentarios_negativos = count(when(col("comment").rlike(REGEX_NEGATIVO), 1)).alias("comentarios_negativos")
+
+        gold_df = df_filtrado.groupBy("app_nome", "app_source", "periodo_referencia", "segmento").agg(
+            F.round(avg("rating"), 1).alias("nota_media"),
+            count("*").alias("avaliacoes_total"),
+            comentarios_positivos,
+            comentarios_negativos
+        )
+
+        if env == ENV_PRE_VALUE:
+            gold_df.orderBy(col("periodo_referencia").desc(), col("app_nome").desc()).show(gold_df.count(), truncate=False)
+
+        metrics_collector.end_collection()
+        metrics_json = metrics_collector.collect_metrics(valid_df, invalid_df, validation_results, "gold_aggregate")
+
+        logger.info(f"[*] Salvando dados válidos em {config.path_target}")
+        save_dataframe(
+            df=gold_df,
+            path=config.path_target,
+            label="valido",
+            partition_column=PARTITION_COLUMN,
+            compression=COMPRESSION_TYPE
+        )
+
+        logger.info(f"[*] Salvando dados inválidos em {config.path_target_fail}")
+        save_dataframe(
+            df=invalid_df,
+            path=config.path_target_fail,
+            label="invalido",
+            partition_column=PARTITION_COLUMN,
+            compression=COMPRESSION_TYPE
+        )
+
+        save_data_mongo(gold_df, "dt_d_view_gold_agg_compass")
+
+        df_visao_silver = create_silver_view(valid_df)
+        save_data_mongo(df_visao_silver.distinct(), "dt_d_view_silver_historical_compass")
+
+        save_metrics(
+            metrics_type='success',
+            index=ELASTIC_INDEX_SUCCESS,
+            df=valid_df,
+            metrics_data=metrics_json
+        )
+
+        logger.info("[*] Pipeline executado com sucesso.")
+    except Exception as e:
+        logger.error("[*] Erro na execução do pipeline", exc_info=True)
+        save_metrics(
+            metrics_type="fail",
+            index=ELASTIC_INDEX_FAIL,
+            error=e
+        )
+        log_error(e, spark.createDataFrame([], StructType([])), 0)
+        raise
+
+def main():
+    if len(sys.argv) != 2:
+        logger.error("Uso: spark-submit app.py <env>")
+        sys.exit(1)
+
+    env = sys.argv[1]
+    spark = None
+
+    try:
+        spark = create_spark_session()
+        execute_pipeline(spark, env)
+    except Exception as e:
+        logger.error("[*] Pipeline falhou de forma crítica", exc_info=True)
+        save_metrics(
+            metrics_type="fail",
+            index=ELASTIC_INDEX_FAIL,
+            error=e
+        )
+        sys.exit(1)
+    finally:
+        if spark:
+            spark.stop()
 
 if __name__ == "__main__":
     main()
-
