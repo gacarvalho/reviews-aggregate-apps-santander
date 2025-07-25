@@ -121,8 +121,7 @@ def execute_pipeline(spark: SparkSession, env: str) -> None:
         valid_df, invalid_df, validation_results = validate_ingest(df)
 
         df = process_reviews_columns(valid_df)
-        df_consolidado = build_consolidated_df(df)
-        df_filtrado = df_consolidado.filter(col("periodo_referencia").rlike(PERIODO_REGEX))
+        df_filtrado = build_consolidated_df(df)
 
         comentarios_positivos = count(when(col("comment").rlike(REGEX_POSITIVO), 1)).alias("comentarios_positivos")
         comentarios_negativos = count(when(col("comment").rlike(REGEX_NEGATIVO), 1)).alias("comentarios_negativos")
@@ -132,7 +131,7 @@ def execute_pipeline(spark: SparkSession, env: str) -> None:
             count("*").alias("avaliacoes_total"),
             comentarios_positivos,
             comentarios_negativos
-        )
+        ).orderBy(col("periodo_referencia").desc(), col("app_nome").desc())
 
         if env == ENV_PRE_VALUE:
             gold_df.orderBy(col("periodo_referencia").desc(), col("app_nome").desc()).show(gold_df.count(), truncate=False)
